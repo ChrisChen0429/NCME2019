@@ -1,0 +1,364 @@
+---
+title: "Multiple_Choice_Mixed_Membership_SDT"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(R2jags)
+library(rstan)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+library(rjags)
+library(mcmcplots)
+library(truncnorm)
+library(Rlab)
+```
+
+## Hierarchical Mixed Membership SDT model for multiple choice analysis
+```{r}
+## simulate the fake data
+set.seed(88)
+J <- 20           # number of item
+N <- 4            # number of alternatives
+I <- 500          # number of examees
+
+### SDT part
+
+z = array(NA, c(J,N))    # true answer 
+for (j in 1:J){
+    for (n in 1:N){
+      this <- rbern(1,0.5)
+      if (this > 0.5){
+        z[j,n] <- 1
+      }else{
+        z[j,n] <- -1
+      }
+    }
+}
+
+lambda = array(NA, c(I,J))
+y = array(NA, c(I,J,N))
+c = array(NA, c(J,N))
+delta = array(NA, c(I,J,N))
+p = array(NA, c(I,J,N))
+
+d = rlnorm(J,0,1)
+theta <- rnorm(I,0,1)
+for (j in 1:J){
+  for (n in 1:N){
+  c[j,n] <- rnorm(n=1,(1/2)*d[j]*z[j,n],1)    
+  }
+}
+
+b <- apply(c*z,1,mean)
+for (i in 1:I){
+  for (j in 1:J){
+    lambda[i,j] <-1 / (1 + exp( b[j] - theta[i]))
+    for (n in 1:N){
+      p[i,j,n] <- lambda[i,j] * (1 -pnorm(c[j,n] - d[j] * z[j,n],0,1)) + (1 - lambda[i,j]) * (1- pnorm(c[j,n],0,1))
+      y[i,j,n] <- rbern(1,p[i,j,n])        
+    }
+  }
+}
+  
+```
+
+```{r}
+## all or non
+all_or_non_score= c()
+
+for (i in 1:I){
+  score = 0
+  for (j in 1:J){
+    score = score + as.numeric(all(as.numeric(z[j,] == 1) == y[i,j,]))
+  }
+  all_or_non_score <- c(all_or_non_score, score)
+}
+
+table(all_or_non_score)
+median(all_or_non_score)
+mean(all_or_non_score)
+sd(all_or_non_score)
+
+likert_score = c()
+for (i in 1:I){
+  score = 0
+  for (j in 1:J){
+    score = score + as.numeric(sum(as.numeric(z[j,] == 1) == y[i,j,]))
+  }
+  likert_score <- c(likert_score, score)
+}
+table(likert_score)
+mean(likert_score)
+median(likert_score)
+sd(likert_score)
+```
+```{r}
+library(ggplot2)
+require(gridExtra)
+all_or_non_score_df <- as.data.frame(all_or_non_score)
+likert_score <- as.data.frame(likert_score)
+p1 <- ggplot(all_or_non_score_df, aes(x=all_or_non_score)) + geom_histogram(binwidth = 1,color="black", fill="white") + scale_color_grey()+scale_fill_grey()+ theme_classic() +theme(axis.text=element_text(size=12), axis.title=element_text(size=14,face="bold"))
+
+p2 <- ggplot(likert_score, aes(x=likert_score)) + geom_histogram(binwidth = 1,color="black", fill="white") + scale_color_grey()+scale_fill_grey() + theme_classic() +theme(axis.text=element_text(size=12), axis.title=element_text(size=14,face="bold"))
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+
+```{r}
+data <- list(I=I,J=J,N=N,y=y,z=z)
+#model<- stan_model(file = 'HMM-SDT2.stan')
+#fit <- vb(model,data = data)
+HMM_SDT_fit <- stan('HMM-SDT2.stan',data=data)
+```
+
+```{r}
+measurement_calculator <- function(estimated_value,true_value){
+  RMSE =  sqrt(mean((as.vector(estimated_value) - as.vector(true_value))^2))
+  average_bias =  mean(as.vector(estimated_value) - as.vector(true_value))
+  return(c(RMSE,average_bias))
+}
+```
+
+```{r}
+library(gridExtra)
+estimated_c <- summary(HMM_SDT_fit, pars = c("c"))$summary[,c("50%")]
+estimated_beta <- summary(HMM_SDT_fit, pars = c("beta"))$summary[,c("50%")]
+estimated_theta <- summary(HMM_SDT_fit, pars = c("theta"))$summary[,c("50%")]
+estimated_lambda <- summary(HMM_SDT_fit, pars = c("lambda"))$summary[,c("50%")]
+estimated_d <- summary(HMM_SDT_fit, pars = c("d"))$summary[,c("50%")]
+
+#estimated_beta <- b  + rnorm(length(b),0,0.1)
+#estimated_lambda <- as.vector(t(lambda)) + rnorm(10000,0,0.1)
+#estimated_theta <- theta
+
+plot_data = data.frame("theta"=rep(estimated_theta,rep(20,500)),"lambda"=estimated_lambda,"b"=rep(estimated_beta,500))
+p1 <- ggplot(data = plot_data,aes(x=theta,y=lambda)) + geom_point(size = 0.8) +theme_classic() +theme(axis.text=element_text(size=12),axis.title=element_text(size=14,face="bold"))
+p2 <- ggplot(data = plot_data,aes(x=b,y=lambda)) + geom_point(size = 0.8) +theme_classic() +theme(axis.text=element_text(size=12),axis.title=element_text(size=14,face="bold"))
+grid.arrange(p1, p2, ncol=2)
+
+```
+
+
+```{r}
+center_2 = rep(d,each=4)*as.numeric(t(z))[1:50]
+t = c()
+c = as.vector(t(c))
+for (i in 1:50){
+  if (center_2[i] > 0){
+    if (c[i]<0){
+        t = c(t, "too easy")
+    }else if(c[i]>center_2[i]){
+        t = c(t, "too hard")
+    }else{
+        t = c(t, "acceptable")
+    }
+    
+  }else{
+    if (c[i]<center_2[i]){
+        t = c(t, "too hard")
+    }else if(c[i]>0){
+        t = c(t, "too easy")
+    }else{
+        t = c(t, "acceptable")
+    }
+  }
+}
+
+plot_data_1 = data.frame('type'=t,'c'=c[1:50],'alternative.index'=1:50)
+P1 <- ggplot(data=plot_data_1) + geom_point(aes(x=alternative.index,y=c,col=type),size=1.5) + geom_hline(yintercept = 0) + theme_classic() +theme(axis.text=element_text(size=12),axis.title=element_text(size=14,face="bold")) 
+  
+for (x in (seq(0,80,4) + 0.5)){
+  P1 = P1 + geom_vline(xintercept = x,linetype=3)
+}
+P1
+```
+
+
+
+
+```{r}
+G = c()
+S = c()
+
+i= 258
+  for (j in 1:J){
+      for (n in 1:N){    
+          G = c(G , (1 - matrix(lambda,byrow = TRUE,nrow = I,ncol = J)[i,j]) * (1 - pnorm(matrix(c,byrow = TRUE,nrow = J,ncol = N)[j,n],0,1)))
+          S = c(S , matrix(lambda,byrow = TRUE,nrow = I,ncol = J)[i,j] * (1 - pnorm(matrix(c,byrow = TRUE,nrow = J,ncol = N)[j,n] - d[j]*z[j,n],0,1)))
+    }
+  }
+S = 1 - S
+
+library(ggplot2)
+estimate = c(G[1:(J*N)],S[1:(J*N)])
+type = c(rep("Guessing",(J*N)),rep("1-Slipping",(J*N)))
+alternative.index = rep(1:(J*N),2)
+gussing_slipping = data.frame("estimate"=estimate,"type"=type,"alternative.index"=alternative.index)
+ggplot(data=gussing_slipping,aes(x=alternative.index,y=estimate,col=type)) + geom_line(size=1) + theme_classic() +theme(axis.text=element_text(size=12),axis.title=element_text(size=14,face="bold")) 
+#+ geom_vline(xintercept = 110.5,linetype=3)+ geom_vline(xintercept = 105.5,linetype=3)+ geom_vline(xintercept = 99.5,linetype=3)
+```
+
+
+```{r}
+plot_data_2 = data.frame('alternative.difficulity'= as.vector(t(-c*as.numeric(t(z)))),"item.difficulity"= rep(b,each=4))
+ggplot(data=plot_data_2,aes(x=item.difficulity,y=alternative.difficulity)) + geom_point(size=1) + theme_classic() +theme(axis.text=element_text(size=12),axis.title=element_text(size=14,face="bold"))
+```
+
+
+
+
+
+
+
+
+## 3pl
+
+```{r}
+data <- list(I=I,J=J,N=N,y=y,z=z)
+
+model<- stan_model(file = '3PL.stan')
+PL_fit <- vb(model,data = data)
+
+
+model<- stan_model(file = 'GPCM.stan')
+GPCM <- vb(model,data = data)
+```
+
+
+
+```{r}
+PL.c.mean = summary(PL_fit)$summary[581:620,1]
+PL.d.mean = summary(PL_fit)$summary[541:580,1]
+PL.theta.mean = summary(PL_fit)$summary[1:500,1]
+PL.a.mean = summary(PL_fit)$summary[501:540,1]
+
+PL.c.sd = summary(PL_fit)$summary[581:620,2]
+PL.d.sd = summary(PL_fit)$summary[541:580,2]
+PL.theta.sd = summary(PL_fit)$summary[1:500,2]
+PL.a.sd = summary(PL_fit)$summary[501:540,2]
+```
+
+```{r}
+m <- cbind(rank(PL.theta.mean), rank(theta))
+cor(m, method="kendall", use="pairwise") 
+
+m <- cbind(rank(PL.d.mean), rank(b))
+cor(m, method="kendall", use="pairwise") 
+
+m <- cbind(rank(PL.a.mean), rank(d))
+cor(m, method="kendall", use="pairwise") 
+```
+
+
+
+## GPCM
+```{r}
+GPCM.alpha.mean = summary(GPCM)$summary[1:40,1]
+GPCM.beta_free.mean = summary(GPCM)$summary[41:239,1]
+GPCM.theta.mean = summary(GPCM)$summary[240:739,1]
+GPCM.b.mean = summary(GPCM)$summary[740:939,1]
+
+
+GPCM.alpha.sd = summary(GPCM)$summary[1:40,2]
+GPCM.beta_free.sd = summary(GPCM)$summary[41:239,2]
+GPCM.theta.sd = summary(GPCM)$summary[240:739,2]
+GPCM.b.sd = summary(GPCM)$summary[740:939,2]
+esitmated_beta = apply(matrix(GPCM.b.mean,byrow = TRUE,ncol = J),2,mean)
+```
+
+```{r}
+m <- cbind(rank(GPCM.theta.mean), rank(theta))
+cor(m, method="kendall", use="pairwise") 
+
+m <- cbind(rank(esitmated_beta), rank(b))
+cor(m, method="kendall", use="pairwise") 
+
+m <- cbind(rank(GPCM.alpha.mean), rank(d))
+cor(m, method="kendall", use="pairwise") 
+```
+
+```{r}
+
+p1 <- stan_plot(GPCM,pars=c('theta[1]','theta[2]','theta[3]','theta[4]','theta[5]','theta[6]','theta[7]','theta[8]','theta[9]','theta[10]'),prob = 0.5,prob_outer = 0.8) +theme_classic()
+
+p2 <-stan_plot(PL.fit,pars=c('theta[1]','theta[2]','theta[3]','theta[4]','theta[5]','theta[6]','theta[7]','theta[8]','theta[9]','theta[10]')) +theme_classic()
+
+p3 <-stan_plot(HMM.SDT.fit,pars=c('theta[1]','theta[2]','theta[3]','theta[4]','theta[5]','theta[6]','theta[7]','theta[8]','theta[9]','theta[10]')) +theme_classic()
+
+grid.arrange(p1, p2,  ncol=2)
+
+p1 <- stan_plot(GPCM,pars=c('alpha[1]','alpha[2]','alpha[3]','alpha[4]','alpha[5]','alpha[6]','alpha[7]','alpha[8]','alpha[9]','alpha[10]')) +theme_classic()
+
+p2 <- stan_plot(PL.fit,pars=c('a[1]','a[2]','a[3]','a[4]','a[5]','a[6]','a[7]','a[8]','a[9]','a[10]'),ci_level=0.05,outer_level=0.1) +theme_classic()
+
+stan_plot(HMM.SDT.fit,pars=c('d[1]','d[2]','d[3]','d[4]','d[5]','d[6]','d[7]','d[8]','d[9]','d[10]')) +theme_classic()
+
+grid.arrange(p1, p2,  ncol=2)
+```
+
+
+
+
+```{r}
+extract(summary(stan_model_vb),pars=c("lambda"))
+```
+
+
+
+
+# plot
+```{r}
+measurement_calculator(HMM.SDT.theta.mean,as.numeric(t(theta)))
+measurement_calculator(HMM.SDT.b.mean,b)
+measurement_calculator(HMM.SDT.lambda.mean,as.numeric(t(lambda)))
+measurement_calculator(HMM.SDT.b.mean,d)
+measurement_calculator(HMM.SDT.c.mean,as.numeric(t(c)))
+```
+
+
+
+
+
+
+
+
+
+```{r}
+library(ggplot2)
+require(gridExtra)
+all_or_non_score_df <- as.data.frame(all_or_non_score)
+likert_score <- as.data.frame(likert_score)
+p1 <- ggplot(all_or_non_score_df, aes(x=all_or_non_score)) + geom_histogram(binwidth = 1,color="black", fill="white") + scale_color_grey()+scale_fill_grey()+ theme_classic() +theme(axis.text=element_text(size=12), axis.title=element_text(size=14,face="bold"))
+
+p2 <- ggplot(likert_score, aes(x=likert_score)) + geom_histogram(binwidth = 1,color="black", fill="white") + scale_color_grey()+scale_fill_grey() + theme_classic() +theme(axis.text=element_text(size=12), axis.title=element_text(size=14,face="bold"))
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+
+
+
+```{r}
+library(ggplot2)
+library(latex2exp)
+ggplot(data = data.frame(x = c(-3, 6)), aes(x)) +
+  stat_function(fun = dnorm, n = 101, args = list(mean = 0, sd = 1)) +
+  stat_function(fun = dnorm, n = 101, args = list(mean = 3, sd = 1)) + 
+  geom_vline(aes(xintercept=0), size=1,  linetype="dashed") + 
+  geom_vline(aes(xintercept=3), size=1, linetype="dashed") + 
+  geom_vline(aes(xintercept=2), size=1) + 
+  ylab("") +
+  xlab(TeX('$\\Psi$')) +
+  scale_y_continuous(breaks = NULL) + 
+  scale_color_grey() + 
+  scale_fill_grey() + 
+  theme_classic() + 
+  theme(axis.text=element_text(size=12),axis.title=element_text(size=14,face="bold"))+
+  theme(axis.text=element_text(size=40),axis.title=element_text(size=40,face="bold"),strip.text = element_text(size =40))
+
+```
+
+
