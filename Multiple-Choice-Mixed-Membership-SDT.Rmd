@@ -1,0 +1,327 @@
+---
+title: "Multiple_Choice_Mixed_Membership_SDT"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(R2jags)
+library(rstan)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+library(rjags)
+library(mcmcplots)
+library(truncnorm)
+library(Rlab)
+```
+
+## Hierarchical Mixed Membership SDT model for multiple choice analysis
+```{r}
+## simulate the fake data
+t = 702
+set.seed(t)
+J <- 40           # number of multiple choice could take
+N <- 5            # number of items in the exam
+I <- 500          # number of examees
+
+### SDT part
+
+z = array(NA, c(J,N))    # true answer 
+for (j in 1:J){
+    for (n in 1:N){
+      this <- rbern(1,0.5)
+      if (this > 0.5){
+        z[j,n] <- 1
+      }else{
+        z[j,n] <- -1
+      }
+    }
+}
+
+lambda = array(NA, c(I,J))
+y = array(NA, c(I,J,N))
+c = array(NA, c(J,N))
+delta = array(NA, c(I,J,N))
+p = array(NA, c(I,J,N))
+
+d = rlnorm(J,0,0.5)
+theta = rnorm(I,0,1)
+b = rnorm(J,0,2)
+
+for (i in 1:I){
+  for (j in 1:J){
+    lambda[i,j] <- 1 / (1 + exp(b[j] -  theta[i]))
+    for (n in 1:N){
+      c[j,n] <- rnorm(n=1,(1/2)*d[j]*z[j,n],1)
+      p[i,j,n] <- lambda[i,j] * (1 -pnorm(c[j,n] - d[j] * z[j,n],0,1)) + (1 - lambda[i,j]) * (1- pnorm(c[j,n],0,1))
+      y[i,j,n] <- rbern(1,p[i,j,n])        
+    }
+  }
+}
+```
+
+
+
+```{r}
+## all or non
+all_or_non_score= c()
+
+for (i in 1:I){
+  score = 0
+  for (j in 1:J){
+    score = score + as.numeric(all(as.numeric(z[j,] == 1) == y[i,j,]))
+  }
+  all_or_non_score <- c(all_or_non_score, score)
+}
+
+table(all_or_non_score)
+median(all_or_non_score)
+mean(all_or_non_score)
+sd(all_or_non_score)
+
+likert_score = c()
+for (i in 1:I){
+  score = 0
+  for (j in 1:J){
+    score = score + as.numeric(sum(as.numeric(z[j,] == 1) == y[i,j,]))
+  }
+  likert_score <- c(likert_score, score)
+}
+table(likert_score)
+mean(likert_score)
+median(likert_score)
+sd(likert_score)
+```
+
+
+# HMM-SDT
+```{r}
+HMM.SDT.c.mean = summary(HMM_SDT_fit)$summary[1:200,1]
+HMM.SDT.d.mean = summary(HMM_SDT_fit)$summary[201:240,1]
+HMM.SDT.theta.mean = summary(HMM_SDT_fit)$summary[241:740,1]
+HMM.SDT.b.mean = summary(HMM_SDT_fit)$summary[741:780,1]
+HMM.SDT.lambda.mean = summary(HMM_SDT_fit)$summary[781:20780,1]
+
+HMM.SDT.c.sd = summary(HMM_SDT_fit)$summary[1:200,2]
+HMM.SDT.d.sd = summary(HMM_SDT_fit)$summary[201:240,2]
+HMM.SDT.theta.sd = summary(HMM_SDT_fit)$summary[241:740,2]
+HMM.SDT.b.sd = summary(HMM_SDT_fit)$summary[741:780,2]
+HMM.SDT.lambda.sd = summary(HMM_SDT_fit)$summary[781:20780,2]
+```
+
+```{r}
+m <- cbind(rank(HMM.SDT.theta.mean), rank(theta))
+cor(m, method="kendall", use="pairwise") 
+
+m <- cbind(rank(HMM.SDT.b.mean), rank(b))
+cor(m, method="kendall", use="pairwise") 
+
+m <- cbind(rank(HMM.SDT.d.mean), rank(d))
+cor(m, method="kendall", use="pairwise") 
+```
+
+```{r}
+center_2 = rep(HMM.SDT.d.mean,each=5)*as.numeric(t(z))[1:200]
+t = c()
+
+for (i in 1:200){
+  if (center_2[i] > 0){
+    if (HMM.SDT.c.mean[i]<0){
+        t = c(t, "too easy")
+    }else if(HMM.SDT.c.mean[i]>center_2[i]){
+        t = c(t, "too hard")
+    }else{
+        t = c(t, "acceptable")
+    }
+    
+  }else{
+    if (HMM.SDT.c.mean[i]<center_2[i]){
+        t = c(t, "too hard")
+    }else if(HMM.SDT.c.mean[i]>0){
+        t = c(t, "too easy")
+    }else{
+        t = c(t, "acceptable")
+    }
+  }
+}
+
+plot_data_1 = data.frame('type'=t,'c'=HMM.SDT.c.mean[1:200],'alternative.index'=1:200)
+P1 <- ggplot(data=plot_data_1) + geom_point(aes(x=alternative.index,y=c,col=type),size=1.5) + geom_hline(yintercept = 0) + theme_classic() +theme(axis.text=element_text(size=12),axis.title=element_text(size=14,face="bold")) 
+  
+for (x in seq(0,200,5.5)){
+  P1 = P1 + geom_vline(xintercept = x,linetype=3)
+}
+P1
+```
+
+
+
+
+```{r}
+G = c()
+S = c()
+
+i= 258
+  for (j in 1:J){
+      for (n in 1:N){    
+        if (z[j,n]==1){
+          G = c(G , matrix(HMM.SDT.lambda.mean,byrow = TRUE,nrow = I,ncol = J)[i,j] * (1 - pnorm(matrix(HMM.SDT.c.mean,byrow = TRUE,nrow = J,ncol = N)[j,n],0,1)))
+          S = c(S , (1- matrix(HMM.SDT.lambda.mean,byrow = TRUE,nrow = I,ncol = J)[i,j]) * (1 - pnorm(matrix(HMM.SDT.c.mean,byrow = TRUE,nrow = J,ncol = N)[j,n] - HMM.SDT.d.mean[j],0,1)))
+        }else{
+          G = c(G , pnorm(matrix(HMM.SDT.c.mean,byrow = TRUE,nrow = J,ncol = N)[j,n],0,1))
+          S = c(S , pnorm(matrix(HMM.SDT.c.mean,byrow = TRUE,nrow = J,ncol = N)[j,n]+HMM.SDT.d.mean[j],0,1))
+        }
+    }
+  }
+
+rank(HMM.SDT.theta.mean)
+library(ggplot2)
+estimate = c(G[1:(J*N)],S[1:(J*N)])
+type = c(rep("Guessing",(J*N)),rep("Slipping",(J*N)))
+alternative.index = rep(1:(J*N),2)
+gussing_slipping = data.frame("estimate"=estimate,"type"=type,"alternative.index"=alternative.index)
+ggplot(data=gussing_slipping,aes(x=alternative.index,y=estimate,col=type)) + geom_line(size=1) + theme_classic() +theme(axis.text=element_text(size=12),axis.title=element_text(size=14,face="bold")) 
+#+ geom_vline(xintercept = 110.5,linetype=3)+ geom_vline(xintercept = 105.5,linetype=3)+ geom_vline(xintercept = 99.5,linetype=3)
+```
+
+
+```{r}
+plot_data_2 = data.frame('alternative.difficulity'= HMM.SDT.c.mean*as.numeric(t(z)),"item.difficulity"= rep(HMM.SDT.b.mean,each=5))
+ggplot(data=plot_data_2,aes(x=item.difficulity,y=alternative.difficulity)) + geom_point(size=1) + theme_classic() +theme(axis.text=element_text(size=12),axis.title=element_text(size=14,face="bold"))
+```
+
+
+```{r}
+plot_data = data.frame("theta"=rep(HMM.SDT.theta.mean,rep(40,500)),"lambda"=HMM.SDT.lambda.mean,"b"=rep(HMM.SDT.b.mean,500))
+ggplot(data = plot_data,aes(x=theta,y=lambda)) + geom_point(aes(col=b),size = 0.8) + theme_classic() +theme(axis.text=element_text(size=12),axis.title=element_text(size=14,face="bold"))
+
+plot_data = data.frame("theta"=rep(theta,rep(40,500)),"lambda"=as.numeric(t(lambda)),"b"=rep(b,500))
+ggplot(data = plot_data,aes(x=theta,y=lambda)) + geom_point(aes(col=b),size = 0.8) + theme_classic() +theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"))
+```
+
+```{r}
+measurement_calculator <- function(estimated_value,true_value){
+  RMSE =  sqrt(mean((as.vector(estimated_value) - as.vector(true_value))^2))
+  average_bias =  mean(as.vector(estimated_value) - as.vector(true_value))
+  return(c(RMSE,average_bias))
+}
+
+```
+
+
+
+
+## 3pl
+
+```{r}
+PL.c.mean = summary(PL_fit)$summary[581:620,1]
+PL.d.mean = summary(PL_fit)$summary[541:580,1]
+PL.theta.mean = summary(PL_fit)$summary[1:500,1]
+PL.a.mean = summary(PL_fit)$summary[501:540,1]
+
+PL.c.sd = summary(PL_fit)$summary[581:620,2]
+PL.d.sd = summary(PL_fit)$summary[541:580,2]
+PL.theta.sd = summary(PL_fit)$summary[1:500,2]
+PL.a.sd = summary(PL_fit)$summary[501:540,2]
+```
+
+```{r}
+m <- cbind(rank(PL.theta.mean), rank(theta))
+cor(m, method="kendall", use="pairwise") 
+
+m <- cbind(rank(PL.d.mean), rank(b))
+cor(m, method="kendall", use="pairwise") 
+
+m <- cbind(rank(PL.a.mean), rank(d))
+cor(m, method="kendall", use="pairwise") 
+```
+
+
+
+## GPCM
+```{r}
+GPCM.alpha.mean = summary(GPCM)$summary[1:40,1]
+GPCM.beta_free.mean = summary(GPCM)$summary[41:239,1]
+GPCM.theta.mean = summary(GPCM)$summary[240:739,1]
+GPCM.b.mean = summary(GPCM)$summary[740:939,1]
+
+
+GPCM.alpha.sd = summary(GPCM)$summary[1:40,2]
+GPCM.beta_free.sd = summary(GPCM)$summary[41:239,2]
+GPCM.theta.sd = summary(GPCM)$summary[240:739,2]
+GPCM.b.sd = summary(GPCM)$summary[740:939,2]
+esitmated_beta = apply(matrix(GPCM.b.mean,byrow = TRUE,ncol = J),2,mean)
+```
+
+```{r}
+m <- cbind(rank(GPCM.theta.mean), rank(theta))
+cor(m, method="kendall", use="pairwise") 
+
+m <- cbind(rank(esitmated_beta), rank(b))
+cor(m, method="kendall", use="pairwise") 
+
+m <- cbind(rank(GPCM.alpha.mean), rank(d))
+cor(m, method="kendall", use="pairwise") 
+```
+
+```{r}
+
+p1 <- stan_plot(GPCM,pars=c('theta[1]','theta[2]','theta[3]','theta[4]','theta[5]','theta[6]','theta[7]','theta[8]','theta[9]','theta[10]'),prob = 0.5,prob_outer = 0.8) +theme_classic()
+
+p2 <-stan_plot(PL.fit,pars=c('theta[1]','theta[2]','theta[3]','theta[4]','theta[5]','theta[6]','theta[7]','theta[8]','theta[9]','theta[10]')) +theme_classic()
+
+p3 <-stan_plot(HMM.SDT.fit,pars=c('theta[1]','theta[2]','theta[3]','theta[4]','theta[5]','theta[6]','theta[7]','theta[8]','theta[9]','theta[10]')) +theme_classic()
+
+grid.arrange(p1, p2,  ncol=2)
+
+p1 <- stan_plot(GPCM,pars=c('alpha[1]','alpha[2]','alpha[3]','alpha[4]','alpha[5]','alpha[6]','alpha[7]','alpha[8]','alpha[9]','alpha[10]')) +theme_classic()
+
+p2 <- stan_plot(PL.fit,pars=c('a[1]','a[2]','a[3]','a[4]','a[5]','a[6]','a[7]','a[8]','a[9]','a[10]'),ci_level=0.05,outer_level=0.1) +theme_classic()
+
+stan_plot(HMM.SDT.fit,pars=c('d[1]','d[2]','d[3]','d[4]','d[5]','d[6]','d[7]','d[8]','d[9]','d[10]')) +theme_classic()
+
+grid.arrange(p1, p2,  ncol=2)
+```
+
+
+
+
+```{r}
+extract(summary(stan_model_vb),pars=c("lambda"))
+```
+
+
+
+
+# plot
+```{r}
+measurement_calculator(HMM.SDT.theta.mean,as.numeric(t(theta)))
+measurement_calculator(HMM.SDT.b.mean,b)
+measurement_calculator(HMM.SDT.lambda.mean,as.numeric(t(lambda)))
+measurement_calculator(HMM.SDT.b.mean,d)
+measurement_calculator(HMM.SDT.c.mean,as.numeric(t(c)))
+```
+
+
+
+
+
+
+
+
+
+```{r}
+library(ggplot2)
+require(gridExtra)
+all_or_non_score_df <- as.data.frame(all_or_non_score)
+likert_score <- as.data.frame(likert_score)
+p1 <- ggplot(all_or_non_score_df, aes(x=all_or_non_score)) + geom_histogram(binwidth = 1,color="black", fill="white") + scale_color_grey()+scale_fill_grey()+ theme_classic() +theme(axis.text=element_text(size=12), axis.title=element_text(size=14,face="bold"))
+
+p2 <- ggplot(likert_score, aes(x=likert_score)) + geom_histogram(binwidth = 1,color="black", fill="white") + scale_color_grey()+scale_fill_grey() + theme_classic() +theme(axis.text=element_text(size=12), axis.title=element_text(size=14,face="bold"))
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+
+
